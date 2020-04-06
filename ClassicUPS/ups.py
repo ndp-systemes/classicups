@@ -1,14 +1,17 @@
 import json
+import logging
 import urllib
 import xmltodict
+import pprint
 
 from binascii import a2b_base64
 from datetime import datetime
 from dict2xml import dict2xml
 
+_logger = logging.getLogger(__name__)
+
 
 class UPSConnection(object):
-
     test_urls = {
         'track': 'https://wwwcie.ups.com/ups.app/xml/Track',
         'ship_confirm': 'https://wwwcie.ups.com/ups.app/xml/ShipConfirm',
@@ -22,7 +25,6 @@ class UPSConnection(object):
 
     def __init__(self, license_number, user_id, password, shipper_number=None,
                  debug=False):
-
         self.license_number = license_number
         self.user_id = user_id
         self.password = password
@@ -57,17 +59,33 @@ class UPSConnection(object):
         if self.debug:
             url = self.test_urls[url_action]
 
+        if self.debug:
+            _logger.debug("Call service %s on url %s", url_action, url)
+            _logger.debug(pprint.pformat(ups_request))
         xml = self._generate_xml(url_action, ups_request)
-        resp = urllib.urlopen(url, xml.encode('ascii', 'xmlcharrefreplace'))\
-                .read()
+        resp = urllib.urlopen(url, xml.encode('ascii', 'xmlcharrefreplace')).read()
 
-        return UPSResult(resp)
+        resp = UPSResult(resp)
+        if self.debug:
+            _logger.debug("Result %s on url %s", url_action, url)
+            _logger.debug(pprint.pformat(resp.dict_response))
+        return resp
 
     def tracking_info(self, *args, **kwargs):
         return TrackingInfo(self, *args, **kwargs)
 
-    def create_shipment(self, *args, **kwargs):
-        return Shipment(self, *args, **kwargs)
+    def create_shipment(self, from_addr, to_addr, package_infos, file_format='EPL', reference_numbers=None,
+                        shipping_service=None, description='', delivery_confirmation=None):
+        return Shipment(ups_conn=self,
+                        from_addr=from_addr,
+                        to_addr=to_addr,
+                        package_infos=package_infos,
+                        file_format=file_format,
+                        reference_numbers=reference_numbers,
+                        shipping_service=shipping_service,
+                        description=description,
+                        delivery_confirmation=delivery_confirmation)
+
 
 class UPSResult(object):
 
@@ -81,6 +99,7 @@ class UPSResult(object):
     @property
     def dict_response(self):
         return json.loads(json.dumps(xmltodict.parse(self.xml_response)))
+
 
 class TrackingInfo(object):
 
@@ -112,8 +131,7 @@ class TrackingInfo(object):
         #   P: Pickup
         #   M: Manifest
 
-        shipment_activities = (self.result.dict_response['TrackResponse']
-                                      ['Shipment']['Package']['Activity'])
+        shipment_activities = (self.result.dict_response['TrackResponse']['Shipment']['Package']['Activity'])
         if type(shipment_activities) != list:
             shipment_activities = [shipment_activities]
 
@@ -129,9 +147,10 @@ class TrackingInfo(object):
     @property
     def in_transit(self):
         in_transit = [x for x in self.shipment_activities
-                     if x['Status']['StatusType']['Code'] == 'I']
+                      if x['Status']['StatusType']['Code'] == 'I']
 
         return len(in_transit) > 0
+
 
 class Shipment(object):
     SHIPPING_SERVICES = {
@@ -161,12 +180,66 @@ class Shipment(object):
         'usps_delivery_confiratmion': 4,
     }
 
-    def __init__(self, ups_conn, from_addr, to_addr, dimensions, weight,
-                 file_format='EPL', reference_numbers=None, shipping_service='ground',
-                 description='', dimensions_unit='IN', weight_unit='LBS',
+    def __init__(self,
+                 ups_conn,
+                 from_addr,
+                 to_addr,
+                 package_infos,
+                 file_format='EPL',
+                 reference_numbers=None,
+                 shipping_service=None,
+                 description='',
                  delivery_confirmation=None):
+        """
+
+        :param ups_conn: The UPSConnection instance tu use
+        :param ship_desc: the name of the shippement
+        :param from_addr: the Shipper Address
+        :param to_addr: The delivery Adress
+        :param package_info: info of the package, dict with dimension, name, weight: only the key weight is mandatory
+        :param file_format:
+        :param reference_numbers:
+        :param shipping_service:
+        :param description:
+        :param delivery_confirmation:
+        """
+        shipping_service = shipping_service or {
+            'code': 'ground',
+            'desc': u"Ground"
+        }
+        if isinstance(shipping_service, (str, unicode)):
+            shipping_service = {'code': shipping_service}
 
         self.file_format = file_format
+        if not isinstance(package_infos, (list, set, tuple)):
+            package_infos = [package_infos]
+        ups_packages = []
+        for package_info in package_infos:
+            vals = {
+                "Description": package_info.get('desc'),
+                'PackagingType': {
+                    'Code': package_info.get('type', '02'),
+                    # Box (see http://www.ups.com/worldshiphelp/WS11/ENU/AppHelp/Codes/Package_Type_Codes.htm)
+                },
+                'PackageWeight': {
+                    'UnitOfMeasurement': {
+                        'Code': package_info.get('weight_unit', 'LBS'),
+                    },
+                    'Weight': package_info['weight'],
+                },
+                'PackageServiceOptions': {},
+            }
+            if package_info.get('fill_dimension', True):
+                vals['Dimensions'] = {
+                    'UnitOfMeasurement': {
+                        'Code': package_info.get('dimensions_unit', 'IN'),
+                    },
+                    'Length': package_info['length'],
+                    'Width': package_info['width'],
+                    'Height': package_info['height'],
+                }
+            ups_packages.append(vals)
+
         shipping_request = {
             'ShipmentConfirmRequest': {
                 'Request': {
@@ -183,6 +256,7 @@ class Shipment(object):
                         'AttentionName': from_addr.get('attn') if from_addr.get('attn') else from_addr['name'],
                         'PhoneNumber': from_addr['phone'],
                         'ShipperNumber': ups_conn.shipper_number,
+                        'EMailAddress': from_addr.get('email', ''),
                         'Address': {
                             'AddressLine1': from_addr['address1'],
                             'City': from_addr['city'],
@@ -191,10 +265,12 @@ class Shipment(object):
                             'PostalCode': from_addr['postal_code'],
                         },
                     },
-                    'ShipTo' : {
+                    'ShipTo': {
                         'CompanyName': to_addr['name'],
                         'AttentionName': to_addr.get('attn') if to_addr.get('attn') else to_addr['name'],
-                        'PhoneNumber': to_addr['phone'],
+                        'PhoneNumber': to_addr.get('phone'),
+                        'LocationID': to_addr.get('location_id'),
+                        'EMailAddress': to_addr.get('email', ''),
                         'Address': {
                             'AddressLine1': to_addr['address1'],
                             'City': to_addr['city'],
@@ -204,9 +280,9 @@ class Shipment(object):
                             # 'ResidentialAddress': '',  # TODO: omit this if not residential
                         },
                     },
-                    'Service' : {  # TODO: add new service types
-                        'Code': self.SHIPPING_SERVICES[shipping_service],
-                        'Description': shipping_service,
+                    'Service': {  # TODO: add new service types
+                        'Code': self.SHIPPING_SERVICES.get(shipping_service['code'], shipping_service['code']),
+                        'Description': shipping_service.get('desc'),
                     },
                     'PaymentInformation': {  # TODO: Other payment information
                         'Prepaid': {
@@ -215,28 +291,7 @@ class Shipment(object):
                             },
                         },
                     },
-                    'Package': {
-                        'PackagingType': {
-                            'Code': '02',  # Box (see http://www.ups.com/worldshiphelp/WS11/ENU/AppHelp/Codes/Package_Type_Codes.htm)
-                        },
-                        'Dimensions': {
-                            'UnitOfMeasurement': {
-                                'Code': dimensions_unit,
-                                # default unit: inches (IN)
-                            },
-                            'Length': dimensions['length'],
-                            'Width': dimensions['width'],
-                            'Height': dimensions['height'],
-                        },
-                        'PackageWeight': {
-                            'UnitOfMeasurement': {
-                                'Code': weight_unit,
-                                # default unit: pounds (LBS)
-                            },
-                            'Weight': weight,
-                        },
-                        'PackageServiceOptions': {},
-                    },
+                    'Package': ups_packages,
                 },
                 'LabelSpecification': {  # TODO: support GIF and EPL (and others)
                     'LabelPrintMethod': {
@@ -255,13 +310,14 @@ class Shipment(object):
         }
 
         if delivery_confirmation:
-            shipping_request['ShipmentConfirmRequest']['Shipment']['Package']['PackageServiceOptions']['DeliveryConfirmation'] = {
+            shipping_request['ShipmentConfirmRequest']['Shipment']['Package']['PackageServiceOptions'][
+                'DeliveryConfirmation'] = {
                 'DCISType': self.DCIS_TYPES[delivery_confirmation]
             }
 
         if reference_numbers:
             reference_dict = []
-            for ref_code, ref_number in enumerate(reference_numbers):
+            for ref_code, ref_number in enumerate(reference_numbers, 1):
                 # allow custom reference codes to be set by passing tuples.
                 # according to the docs ("Shipping Package -- WebServices
                 # 8/24/2013") ReferenceNumber/Code should hint on the type of
@@ -276,7 +332,7 @@ class Shipment(object):
                     'Code': ref_code,
                     'Value': ref_number
                 })
-            #reference_dict[0]['BarCodeIndicator'] = '1'
+            # reference_dict[0]['BarCodeIndicator'] = '1'
 
             if from_addr['country'] == 'US' and to_addr['country'] == 'US':
                 shipping_request['ShipmentConfirmRequest']['Shipment']['Package']['ReferenceNumber'] = reference_dict
@@ -285,18 +341,21 @@ class Shipment(object):
                 shipping_request['ShipmentConfirmRequest']['Shipment']['ReferenceNumber'] = reference_dict
 
         if from_addr.get('address2'):
-            shipping_request['ShipmentConfirmRequest']['Shipment']['Shipper']['Address']['AddressLine2'] = from_addr['address2']
+            shipping_request['ShipmentConfirmRequest']['Shipment']['Shipper']['Address']['AddressLine2'] = from_addr[
+                'address2']
 
         if to_addr.get('company'):
             shipping_request['ShipmentConfirmRequest']['Shipment']['ShipTo']['CompanyName'] = to_addr['company']
 
         if to_addr.get('address2'):
-            shipping_request['ShipmentConfirmRequest']['Shipment']['ShipTo']['Address']['AddressLine2'] = to_addr['address2']
+            shipping_request['ShipmentConfirmRequest']['Shipment']['ShipTo']['Address']['AddressLine2'] = to_addr[
+                'address2']
 
         self.confirm_result = ups_conn._transmit_request('ship_confirm', shipping_request)
 
         if 'ShipmentDigest' not in self.confirm_result.dict_response['ShipmentConfirmResponse']:
-            error_string = self.confirm_result.dict_response['ShipmentConfirmResponse']['Response']['Error']['ErrorDescription']
+            error_string = self.confirm_result.dict_response['ShipmentConfirmResponse']['Response']['Error'][
+                'ErrorDescription']
             raise Exception(error_string)
 
         confirm_result_digest = self.confirm_result.dict_response['ShipmentConfirmResponse']['ShipmentDigest']
@@ -317,17 +376,44 @@ class Shipment(object):
 
     @property
     def cost(self):
-        total_cost = self.confirm_result.dict_response['ShipmentConfirmResponse']['ShipmentCharges']['TotalCharges']['MonetaryValue']
+        total_cost = self.confirm_result.dict_response['ShipmentConfirmResponse']['ShipmentCharges']['TotalCharges'][
+            'MonetaryValue']
         return float(total_cost)
+
+    def package_results(self):
+        pkg_results = self.accept_result.dict_response['ShipmentAcceptResponse']['ShipmentResults']['PackageResults']
+        if isinstance(pkg_results, dict):
+            pkg_results = [pkg_results]
+        for pkg_result in pkg_results:
+            yield self._convert_pkg_result(pkg_result)
+
+    def _convert_pkg_result(self, ups_package_results):
+        """
+        Convert a dict ups ShipmentAcceptResponse/ShipmentResults/PackageResults to a more simple python dict
+
+        :param ups_package_results: the  dict from ups PackageResults to convert
+        :return: a dict with the key as follow
+        'label':  ShipmentAcceptResponse/ShipmentResults/PackageResults/LabelImage/GraphicImage,
+        'label_format': ShipmentAcceptResponse/ShipmentResults/PackageResults/LabelImage/Code or self.file_format,
+        'tracking_number': ShipmentAcceptResponse/ShipmentResults/PackageResults/TrackingNumber
+        """
+        return {
+            'label': ups_package_results['LabelImage']['GraphicImage'],
+            'label_format': ups_package_results['LabelImage']['LabelImageFormat'].get('Code', self.file_format),
+            'tracking_number': ups_package_results['TrackingNumber']
+        }
+
+    @property
+    def tracking_numbers(self):
+        return [pkg_res['tracking_number'] for pkg_res in self.package_results()]
 
     @property
     def tracking_number(self):
-        tracking_number = self.confirm_result.dict_response['ShipmentConfirmResponse']['ShipmentIdentificationNumber']
-        return tracking_number
+        return self.confirm_result.dict_response['ShipmentConfirmResponse']['ShipmentIdentificationNumber']
 
     def get_label(self):
-        raw_epl = self.accept_result.dict_response['ShipmentAcceptResponse']['ShipmentResults']['PackageResults']['LabelImage']['GraphicImage']
-        return a2b_base64(raw_epl)
+        label_img = self.accept_result.dict_response['ShipmentAcceptResponse']['ShipmentResults']['PackageResults']
+        return a2b_base64(label_img['LabelImage']['GraphicImage'])
 
     def save_label(self, fd):
         fd.write(self.get_label())
