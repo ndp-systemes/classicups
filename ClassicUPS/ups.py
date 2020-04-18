@@ -74,11 +74,12 @@ class UPSConnection(object):
     def tracking_info(self, *args, **kwargs):
         return TrackingInfo(self, *args, **kwargs)
 
-    def create_shipment(self, from_addr, to_addr, package_infos, file_format='EPL', reference_numbers=None,
+    def create_shipment(self, from_addr, to_addr, package_infos, alternate_addr=None, file_format='EPL', reference_numbers=None,
                         shipping_service=None, description='', delivery_confirmation=None):
         return Shipment(ups_conn=self,
                         from_addr=from_addr,
                         to_addr=to_addr,
+                        alternate_addr=alternate_addr,
                         package_infos=package_infos,
                         file_format=file_format,
                         reference_numbers=reference_numbers,
@@ -185,6 +186,7 @@ class Shipment(object):
                  from_addr,
                  to_addr,
                  package_infos,
+                 alternate_addr=None,
                  file_format='EPL',
                  reference_numbers=None,
                  shipping_service=None,
@@ -196,6 +198,7 @@ class Shipment(object):
         :param ship_desc: the name of the shippement
         :param from_addr: the Shipper Address
         :param to_addr: The delivery Adress
+        :param alternate_addr: The Aleternate delivery Adress /ShipmentRequest/Shipment/AlternateDeliveryAddress
         :param package_info: info of the package, dict with dimension, name, weight: only the key weight is mandatory
         :param file_format:
         :param reference_numbers:
@@ -269,7 +272,6 @@ class Shipment(object):
                         'CompanyName': to_addr['name'],
                         'AttentionName': to_addr.get('attn') if to_addr.get('attn') else to_addr['name'],
                         'PhoneNumber': to_addr.get('phone'),
-                        'LocationID': to_addr.get('location_id'),
                         'EMailAddress': to_addr.get('email', ''),
                         'Address': {
                             'AddressLine1': to_addr['address1'],
@@ -310,9 +312,25 @@ class Shipment(object):
         }
 
         if delivery_confirmation:
-            shipping_request['ShipmentConfirmRequest']['Shipment']['Package']['PackageServiceOptions'][
-                'DeliveryConfirmation'] = {
-                'DCISType': self.DCIS_TYPES[delivery_confirmation]
+            shipping_request['ShipmentConfirmRequest']['Shipment']['Package']['PackageServiceOptions']['DeliveryConfirmation'] = {
+                    'DCISType': self.DCIS_TYPES[delivery_confirmation]
+            }
+        if alternate_addr:
+            shipping_request['ShipmentConfirmRequest']['Shipment']['AlternateDeliveryAddress'] = {
+                'Name': alternate_addr['name'],
+                'AttentionName': alternate_addr.get('attn') if alternate_addr.get('attn') else alternate_addr['name'],
+                'Address': {
+                    'AddressLine1': alternate_addr['address1'],
+                    'City': alternate_addr['city'],
+                    'StateProvinceCode': alternate_addr['state'],
+                    'CountryCode': alternate_addr['country'],
+                    'PostalCode': alternate_addr['postal_code'],
+                },
+            }
+        if to_addr.get('location_id'):
+            shipping_request['ShipmentConfirmRequest']['Shipment']['ShipTo']['LocationID'] = to_addr.get('location_id')
+            shipping_request['ShipmentConfirmRequest']['Shipment']['ShipmentIndicationType'] = {
+                'Code': '01'
             }
 
         if reference_numbers:
