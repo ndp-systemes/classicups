@@ -11,6 +11,29 @@ from dict2xml import dict2xml
 _logger = logging.getLogger(__name__)
 
 
+class UpsException(Exception):
+
+    def __init__(self, code, msg):
+        super(UpsException, self).__init__()
+        self.code = code
+        self.message = msg
+        self.type = None
+
+
+class UpsWarning(UpsException):
+
+    def __init__(self, code, msg):
+        super(UpsWarning, self).__init__(code, msg)
+        self.type = 'Warning'
+
+
+class UpsError(UpsException):
+
+    def __init__(self, code, msg):
+        super(UpsError, self).__init__(code, msg)
+        self.type = 'Warning'
+
+
 class UPSConnection(object):
     test_urls = {
         'track': 'https://wwwcie.ups.com/ups.app/xml/Track',
@@ -24,12 +47,13 @@ class UPSConnection(object):
     }
 
     def __init__(self, license_number, user_id, password, shipper_number=None,
-                 debug=False):
+                 debug=False, raise_on_warn=False):
         self.license_number = license_number
         self.user_id = user_id
         self.password = password
         self.shipper_number = shipper_number
         self.debug = debug
+        self.raise_on_warn = raise_on_warn
 
     def _generate_xml(self, url_action, ups_request):
         access_request = {
@@ -137,7 +161,7 @@ class TrackingInfo(object):
         #   M: Manifest
 
         shipment_activities = (self.result.dict_response['TrackResponse']['Shipment']['Package']['Activity'])
-        if type(shipment_activities) != list:
+        if not isinstance(shipment_activities, list):
             shipment_activities = [shipment_activities]
 
         return shipment_activities
@@ -316,14 +340,15 @@ class Shipment(object):
         }
 
         if delivery_confirmation:
-            shipping_request['ShipmentConfirmRequest']['Shipment']['Package']['PackageServiceOptions']['DeliveryConfirmation'] = {
-                    'DCISType': self.DCIS_TYPES[delivery_confirmation]
+            shipping_request['ShipmentConfirmRequest']['Shipment']['Package']['PackageServiceOptions'][
+                'DeliveryConfirmation'] = {
+                'DCISType': self.DCIS_TYPES[delivery_confirmation]
             }
         if alternate_addr:
             shipping_request['ShipmentConfirmRequest']['Shipment']['AlternateDeliveryAddress'] = {
                 'Name': alternate_addr['name'],
                 'AttentionName': alternate_addr.get('attn', to_addr.get('attn', to_addr['name'])),
-                'UPSAccessPointID': alternate_addr['access_point_id'],
+                # 'UPSAccessPointID': alternate_addr['access_point_id'],
                 'Address': {
                     'AddressLine1': alternate_addr['address1'],
                     'City': alternate_addr['city'],
@@ -337,14 +362,14 @@ class Shipment(object):
         if reference_numbers:
             reference_dict = []
             for ref_code, ref_number in enumerate(reference_numbers, 1):
-            # allow custom reference codes to be set by passing tuples.
-            # according to the docs ("Shipping Package -- WebServices
-            # 8/24/2013") ReferenceNumber/Code should hint on the type of
-            # the reference number. a list of codes can be found in
-            # appendix I (page 503) in the same document.
+                # allow custom reference codes to be set by passing tuples.
+                # according to the docs ("Shipping Package -- WebServices
+                # 8/24/2013") ReferenceNumber/Code should hint on the type of
+                # the reference number. a list of codes can be found in
+                # appendix I (page 503) in the same document.
                 try:
                     ref_code, ref_number = ref_number
-                except:
+                except BaseException:
                     pass
 
             reference_dict.append({
@@ -376,6 +401,14 @@ class Shipment(object):
             error_string = self.confirm_result.dict_response['ShipmentConfirmResponse']['Response']['Error'][
                 'ErrorDescription']
             raise Exception(error_string)
+        error = self.confirm_result.dict_response['ShipmentConfirmResponse']['Response'].get('Error', {})
+        if ups_conn.raise_on_warn and error:
+            if error['ErrorSeverity'] == 'Warning':
+                raise UpsWarning(error['ErrorCode'], error['ErrorDescription'])
+            elif error['ErrorSeverity'] == 'Error':
+                raise UpsError(error['ErrorCode'], error['ErrorDescription'])
+            else:
+                raise UpsException(error['ErrorSeverity'], error['ErrorCode'], error['ErrorDescription'])
 
         confirm_result_digest = self.confirm_result.dict_response['ShipmentConfirmResponse']['ShipmentDigest']
         ship_accept_request = {
