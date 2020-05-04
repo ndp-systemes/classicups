@@ -60,21 +60,25 @@ class UPSConnection(object):
             url = self.test_urls[url_action]
 
         if self.debug:
-            _logger.debug("Call service %s on url %s", url_action, url)
+            _logger.debug(">>>>> Call service %s on url %s <<<<<", url_action, url)
             _logger.debug(pprint.pformat(ups_request))
-        xml = self._generate_xml(url_action, ups_request)
-        resp = urllib.urlopen(url, xml.encode('ascii', 'xmlcharrefreplace')).read()
+            _logger.debug(">>>>> Call service %s on url %s <<<<<", url_action, url)
 
+        xml = self._generate_xml(url_action, ups_request).encode('ascii', 'xmlcharrefreplace')
+        resp = urllib.urlopen(url, xml).read()
         resp = UPSResult(resp)
+
         if self.debug:
-            _logger.debug("Result %s on url %s", url_action, url)
+            _logger.debug(">>>>> Response Call service %s on url %s <<<<<", url_action, url)
             _logger.debug(pprint.pformat(resp.dict_response))
+            _logger.debug(">>>>> Response Call service %s on url %s <<<<<", url_action, url)
         return resp
 
     def tracking_info(self, *args, **kwargs):
         return TrackingInfo(self, *args, **kwargs)
 
-    def create_shipment(self, from_addr, to_addr, package_infos, alternate_addr=None, file_format='EPL', reference_numbers=None,
+    def create_shipment(self, from_addr, to_addr, package_infos, alternate_addr=None, file_format='EPL',
+                        reference_numbers=None,
                         shipping_service=None, description='', delivery_confirmation=None):
         return Shipment(ups_conn=self,
                         from_addr=from_addr,
@@ -256,7 +260,7 @@ class Shipment(object):
                 'Shipment': {
                     'Shipper': {
                         'Name': from_addr['name'],
-                        'AttentionName': from_addr.get('attn') if from_addr.get('attn') else from_addr['name'],
+                        'AttentionName': from_addr.get('attn', from_addr['name']),
                         'PhoneNumber': from_addr['phone'],
                         'ShipperNumber': ups_conn.shipper_number,
                         'EMailAddress': from_addr.get('email', ''),
@@ -270,7 +274,7 @@ class Shipment(object):
                     },
                     'ShipTo': {
                         'CompanyName': to_addr['name'],
-                        'AttentionName': to_addr.get('attn') if to_addr.get('attn') else to_addr['name'],
+                        'AttentionName': to_addr.get('attn', to_addr['name']),
                         'PhoneNumber': to_addr.get('phone'),
                         'EMailAddress': to_addr.get('email', ''),
                         'Address': {
@@ -318,7 +322,8 @@ class Shipment(object):
         if alternate_addr:
             shipping_request['ShipmentConfirmRequest']['Shipment']['AlternateDeliveryAddress'] = {
                 'Name': alternate_addr['name'],
-                'AttentionName': alternate_addr.get('attn') if alternate_addr.get('attn') else alternate_addr['name'],
+                'AttentionName': alternate_addr.get('attn', to_addr.get('attn', to_addr['name'])),
+                'UPSAccessPointID': alternate_addr['access_point_id'],
                 'Address': {
                     'AddressLine1': alternate_addr['address1'],
                     'City': alternate_addr['city'],
@@ -327,29 +332,25 @@ class Shipment(object):
                     'PostalCode': alternate_addr['postal_code'],
                 },
             }
-        if to_addr.get('location_id'):
-            shipping_request['ShipmentConfirmRequest']['Shipment']['ShipTo']['LocationID'] = to_addr.get('location_id')
-            shipping_request['ShipmentConfirmRequest']['Shipment']['ShipmentIndicationType'] = {
-                'Code': '01'
-            }
+            shipping_request['ShipmentConfirmRequest']['Shipment']['ShipmentIndicationType'] = {'Code': '01'}
 
         if reference_numbers:
             reference_dict = []
             for ref_code, ref_number in enumerate(reference_numbers, 1):
-                # allow custom reference codes to be set by passing tuples.
-                # according to the docs ("Shipping Package -- WebServices
-                # 8/24/2013") ReferenceNumber/Code should hint on the type of
-                # the reference number. a list of codes can be found in
-                # appendix I (page 503) in the same document.
+            # allow custom reference codes to be set by passing tuples.
+            # according to the docs ("Shipping Package -- WebServices
+            # 8/24/2013") ReferenceNumber/Code should hint on the type of
+            # the reference number. a list of codes can be found in
+            # appendix I (page 503) in the same document.
                 try:
                     ref_code, ref_number = ref_number
                 except:
                     pass
 
-                reference_dict.append({
-                    'Code': ref_code,
-                    'Value': ref_number
-                })
+            reference_dict.append({
+                'Code': ref_code,
+                'Value': ref_number
+            })
             # reference_dict[0]['BarCodeIndicator'] = '1'
 
             if from_addr['country'] == 'US' and to_addr['country'] == 'US':
