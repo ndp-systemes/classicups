@@ -348,7 +348,7 @@ class Shipment(object):
             shipping_request['ShipmentConfirmRequest']['Shipment']['AlternateDeliveryAddress'] = {
                 'Name': alternate_addr['name'],
                 'AttentionName': alternate_addr.get('attn', to_addr.get('attn', to_addr['name'])),
-                # 'UPSAccessPointID': alternate_addr['access_point_id'],
+                'UPSAccessPointID': alternate_addr['access_point_id'],
                 'Address': {
                     'AddressLine1': alternate_addr['address1'],
                     'City': alternate_addr['city'],
